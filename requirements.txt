@@ -1,0 +1,10 @@
+torch
+torchvision
+numpy
+gymnasium
+gymnasium[atari]
+gymnasium[accept-rom-license]
+matplotlib
+tensordict
+torchrl
+nes_py
