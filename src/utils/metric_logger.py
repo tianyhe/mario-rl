@@ -2,15 +2,17 @@
 Logger class to log metrics and save plots
 """
 
+import os
 import numpy as np
 import time
 import datetime
 import matplotlib.pyplot as plt
 from pathlib import Path
+import torch
 
 
 class MetricLogger:
-    """Metric logger to log metrics and save plots"""
+    """Metric logger to log metrics, save plots, and models"""
 
     def __init__(self, save_dir):
         self.save_dir = Path(save_dir)
@@ -80,11 +82,18 @@ class MetricLogger:
         self.curr_ep_q = 0.0
         self.curr_ep_loss_length = 0
 
-    def record(self, episode, epsilon, step):
-        mean_ep_reward = np.round(np.mean(self.ep_rewards[-100:]), 3)
-        mean_ep_length = np.round(np.mean(self.ep_lengths[-100:]), 3)
-        mean_ep_loss = np.round(np.mean(self.ep_avg_losses[-100:]), 3)
-        mean_ep_q = np.round(np.mean(self.ep_avg_qs[-100:]), 3)
+    def record(self, episode, epsilon, step, mario):
+        mean_ep_reward = (
+            np.round(np.mean(self.ep_rewards[-100:]), 3) if self.ep_rewards else 0
+        )
+        mean_ep_length = (
+            np.round(np.mean(self.ep_lengths[-100:]), 3) if self.ep_lengths else 0
+        )
+        mean_ep_loss = (
+            np.round(np.mean(self.ep_avg_losses[-100:]), 3) if self.ep_avg_losses else 0
+        )
+        mean_ep_q = np.round(np.mean(self.ep_avg_qs[-100:]), 3) if self.ep_avg_qs else 0
+
         self.moving_avg_ep_rewards.append(mean_ep_reward)
         self.moving_avg_ep_lengths.append(mean_ep_length)
         self.moving_avg_ep_avg_losses.append(mean_ep_loss)
@@ -118,6 +127,7 @@ class MetricLogger:
             plt.figure(figsize=(10, 5))
             plt.title(f"Moving Average {metric.replace('_', ' ').title()}")
             plt.plot(
+                range(1, len(getattr(self, f"moving_avg_{metric}")) + 1),
                 getattr(self, f"moving_avg_{metric}"),
                 label=f"Moving Avg {metric.replace('_', ' ').title()}",
             )
@@ -127,5 +137,32 @@ class MetricLogger:
             plt.savefig(self.plots[metric])
             plt.close()
 
+        # Save the model every 500 episodes
+        if episode % 500 == 0:
+            self.save_model(mario, episode)
+
+    def save_model(self, model, episode):
+        model_save_path = self.save_dir / f"model_logs/mario_model_{episode}.chkpt"
+
+        # Ensure the model_logs directory exists
+        os.makedirs(os.path.dirname(model_save_path), exist_ok=True)
+
+        # Save the model's state dict along with necessary attributes
+        torch.save(
+            {
+                "model": model.state_dict(),
+                "state_dim": model.state_dim,
+                "action_dim": model.action_dim,
+                "network_type": model.network_type,
+                "ddqn": model.ddqn,
+                "exploration_rate": model.exploration_rate,
+                "priority": "priority" if model.memory.priority else "uniform",
+                # Add any other relevant attributes you may need
+            },
+            model_save_path,
+        )
+
+        print(f"Model saved at {model_save_path}")
+
     def get_mean_reward(self):
-        return np.mean(self.ep_rewards[-100:])
+        return np.mean(self.ep_rewards[-100:]) if self.ep_rewards else 0

@@ -12,8 +12,6 @@ from agent.net import create_q_network
 from agent.replay_buffer import ReplayBuffer
 from pathlib import Path
 
-device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-
 
 def process_state(state):
     """
@@ -35,12 +33,14 @@ class Mario:
         ddqn=True,
         priority=False,
         use_cuda=True,
+        discount_rate=0.99,  # Added discount_rate parameter
     ):
         self.state_dim = state_dim
         self.action_dim = action_dim
         self.network_type = network_type
         self.save_dir = save_dir
         self.ddqn = ddqn
+        self.discount_rate = discount_rate  # Save the discount rate
         self.device = torch.device(
             "cuda" if use_cuda and torch.cuda.is_available() else "cpu"
         )
@@ -72,9 +72,9 @@ class Mario:
         self.memory = ReplayBuffer(state_dim, action_dim, int(1e5), 32, priority)
         self.batch_size = 32
 
-        self.gamma = 0.9
+        self.gamma = discount_rate  # Use the discount rate provided in the constructor
         self.optimizer = optim.Adam(self.net.parameters(), lr=0.00025)
-        self.loss_fn = nn.SmoothL1Loss()
+        self.loss_fn = F.mse_loss  # Switch to Mean Squared Error loss
 
         self.burnin = 1e4  # min. experiences before training
         self.learn_every = 3  # no. of experiences between updates to Q_online
@@ -117,7 +117,9 @@ class Mario:
     def learn(self):
         """Update online action value (Q) function with a batch of experiences"""
         if self.ddqn and self.curr_step % self.sync_every == 0:
-            self.sync_Q_target()
+            self.soft_update(
+                self.net, self.target_net, tau=0.005
+            )  # Use soft update instead of sync_Q_target()
 
         if self.curr_step % self.save_every == 0:
             self.save()
@@ -133,9 +135,7 @@ class Mario:
         td_tgt = self.td_target(rewards, next_states, dones)
         loss = self.update_Q_online(td_est, td_tgt)
 
-        # print(f"td_estimate shape: {td_est.shape}")
-        # print(f"td_target shape: {td_tgt.shape}")
-        # print(f"e (td_estimate - td_target) shape: {(td_est - td_tgt).shape}")
+        # Update the priorities in the replay buffer
         self.memory.update_error(td_est - td_tgt, idx)
 
         return (td_est.mean().item(), loss)
@@ -156,7 +156,6 @@ class Mario:
             best_action = torch.argmax(
                 next_state_Q, axis=1
             ).squeeze()  # Ensure best_action is 1D
-            # Ensure next_Q is 1D by using the correct indexing
             next_Q = self.target_net(next_state)[
                 np.arange(0, self.batch_size), best_action
             ].squeeze()
@@ -166,11 +165,16 @@ class Mario:
                 0
             ]  # Use online network for the target Q-value
 
-        # Ensure the resulting tensor is 1D
-        return (reward + (1 - done.float()) * self.gamma * next_Q).float().squeeze()
+        return (
+            (reward + (1 - done.float()) * self.discount_rate * next_Q)
+            .float()
+            .squeeze()
+        )
 
     def update_Q_online(self, td_estimate, td_target):
         """Update the online action value (Q) function with a batch of experiences"""
+        td_estimate = td_estimate.squeeze()
+        td_target = td_target.squeeze()
         loss = self.loss_fn(td_estimate, td_target)
         self.optimizer.zero_grad()
         loss.backward()
@@ -181,6 +185,32 @@ class Mario:
         """Synchronize the target network with the online network"""
         if self.target_net is not None:
             self.target_net.load_state_dict(self.net.state_dict())
+
+    def soft_update(self, local_model, target_model, tau):
+        """Soft update model parameters.
+        θ_target = τ*θ_local + (1 - τ)*θ_target
+        """
+        for target_param, local_param in zip(
+            target_model.parameters(), local_model.parameters()
+        ):
+            target_param.data.copy_(
+                tau * local_param.data + (1.0 - tau) * target_param.data
+            )
+
+    def update_error(self):
+        """Update the priorities for all experiences in the replay buffer"""
+        states, actions, rewards, next_states, dones = self.memory.sample(get_all=True)
+        # Logic: TD_error = Q_online - Q_target
+        # The priorities are the absolute values of the TD errors which indicates the importance of each experience
+        with torch.no_grad():
+            td_est = self.td_estimate(states, actions)
+            td_tgt = self.td_target(rewards, next_states, dones)
+            td_error = td_est - td_tgt
+            self.memory.update_error(td_error)
+
+    def state_dict(self):
+        """Return the state dictionary of the neural network."""
+        return self.net.state_dict()
 
     def save(self, filename=None):
         """Save the model"""
