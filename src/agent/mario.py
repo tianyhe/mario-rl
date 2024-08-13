@@ -34,6 +34,7 @@ class Mario:
         priority=False,
         use_cuda=True,
         discount_rate=0.99,  # Added discount_rate parameter
+        tau=0.005,
     ):
         self.state_dim = state_dim
         self.action_dim = action_dim
@@ -41,6 +42,7 @@ class Mario:
         self.save_dir = save_dir
         self.ddqn = ddqn
         self.discount_rate = discount_rate  # Save the discount rate
+        self.tau = tau
         self.device = torch.device(
             "cuda" if use_cuda and torch.cuda.is_available() else "cpu"
         )
@@ -118,7 +120,7 @@ class Mario:
         """Update online action value (Q) function with a batch of experiences"""
         if self.ddqn and self.curr_step % self.sync_every == 0:
             self.soft_update(
-                self.net, self.target_net, tau=0.005
+                self.net, self.target_net, tau=self.tau
             )  # Use soft update instead of sync_Q_target()
 
         if self.curr_step % self.save_every == 0:
